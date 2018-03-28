@@ -4,12 +4,12 @@ import msgpack
 from enum import Enum, auto
 
 import numpy as np
-
 from planning_utils import a_star, heuristic, create_grid
 from udacidrone import Drone
 from udacidrone.connection import MavlinkConnection
 from udacidrone.messaging import MsgID
-from udacidrone.frame_utils import global_to_local
+from udacidrone.frame_utils import global_to_local, local_to_global
+from bresenham import bresenham
 
 
 class States(Enum):
@@ -106,6 +106,13 @@ class MotionPlanning(Drone):
         self.stop()
         self.in_mission = False
 
+    def is_collinear(self, p1, p2, p3):
+        det = (p1[0]*(p2[1]-p3[1])) + (p2[0]*(p3[1]-p1[1])) + (p3[0]*(p1[1]-p2[1]))
+
+        if det == 0:
+            return True
+        return False
+
     def send_waypoints(self):
         print("Sending waypoints to simulator ...")
         data = msgpack.dumps(self.waypoints)
@@ -120,12 +127,30 @@ class MotionPlanning(Drone):
         self.target_position[2] = TARGET_ALTITUDE
 
         # TODO: read lat0, lon0 from colliders into floating point values
-        
+        filename = 'colliders.csv'
+        home = []
+        with open(filename) as f:
+            lines=f.readlines()
+            for line in lines:
+                if 'lat0' in line:
+                    arr = line.split(',')
+                    lat = arr[0]
+                    lat = float(lat[lat.index(' '):len(lat)])
+
+                    lon = arr[1]
+                    lon = float(lon[lon.rfind(' '):len(lon) - 1])
+
+                    home = [ lon, lat, 0]
+                    break
+
         # TODO: set home position to (lon0, lat0, 0)
+        self.set_home_position(home[0], home[1], home[2])
 
         # TODO: retrieve current global position
+        global_position = self.global_position
  
         # TODO: convert to current local position using global_to_local()
+        current_local_position = global_to_local(global_position, self.global_home)
         
         print('global home {0}, position {1}, local position {2}'.format(self.global_home, self.global_position,
                                                                          self.local_position))
@@ -138,10 +163,22 @@ class MotionPlanning(Drone):
         # Define starting point on the grid (this is just grid center)
         grid_start = (-north_offset, -east_offset)
         # TODO: convert start position to current position rather than map center
+        global_start = (
+            int(current_local_position[0] - north_offset),
+            int(current_local_position[1] - east_offset)
+            )
         
         # Set goal as some arbitrary position on the grid
         grid_goal = (-north_offset + 10, -east_offset + 10)
         # TODO: adapt to set goal as latitude / longitude position and convert
+        goal_local_position = global_to_local([-122.401902, 37.794409, self.global_home[2]], self.global_home)
+        grid_goal = (
+            int(goal_local_position[0] - north_offset), 
+            int(goal_local_position[1] - east_offset)
+            )
+        if grid[grid_goal[0]][grid_goal[1]] > 0:
+            print("Resetting goal to start location\n")
+            grid_goal=grid_start
 
         # Run A* to find a path from start to goal
         # TODO: add diagonal motions with a cost of sqrt(2) to your A* implementation
@@ -149,7 +186,23 @@ class MotionPlanning(Drone):
         print('Local Start and Goal: ', grid_start, grid_goal)
         path, _ = a_star(grid, heuristic, grid_start, grid_goal)
         # TODO: prune path to minimize number of waypoints
-        # TODO (if you're feeling ambitious): Try a different approach altogether!
+        # TODO (if you're feeling ambitious): Try a different approach altogether!        
+        i = 0
+        while True:
+            try:
+                p1 = path[i]
+                p2 = path[i+1]
+                p3 = path[i+2]
+                if p1 == None or p2 == None or p3 == None or len(path) <= 3:
+                    break
+            
+                if (self.is_collinear(p1, p2, p3) and i + 2 < len(path)):                
+                    path.pop(i+1)
+                    path.pop(i+2)
+                else:
+                    i += 2
+            except:
+                break
 
         # Convert path to waypoints
         waypoints = [[p[0] + north_offset, p[1] + east_offset, TARGET_ALTITUDE, 0] for p in path]
